@@ -5,11 +5,6 @@ WHAT THIS IS
 - Files: index.html (page), places.geojson (your data).
 - Uses free OpenStreetMap tiles; no API keys.
 
-PUBLISH (3 SIMPLE WAYS)
-1) Netlify (easiest): go to app.netlify.com → Sites → "Add new site" → "Deploy manually" → drag this folder.
-2) Vercel: create a new project → "Import" → drag this folder.
-3) GitHub Pages: new repo → upload files → Settings → Pages → select main branch.
-
 UPDATE YOUR PLACES
 - Replace 'places.geojson' with a new one (same filename).
 - Re-deploy (drag & drop again). Done.
