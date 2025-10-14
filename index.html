@@ -1,40 +1,27 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Hidden Gems BCN</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-  <style>
-    html,body,#app{height:100%;margin:0}
-    #map{height:100%}
-    .toolbar{position:absolute;z-index:1000;top:12px;left:12px;background:#fff;padding:8px 10px;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12);font:14px system-ui}
-    .chip{display:inline-block;margin:2px 6px 0 0;padding:6px 10px;border-radius:999px;background:#f3f4f6;cursor:pointer}
-    .chip.active{background:#111;color:#fff}
-    .legend{position:absolute;z-index:1000;bottom:12px;left:12px;background:#fff;padding:8px 10px;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12);font:12px system-ui}
-  </style>
-</head>
-<body>
-<div id="app">
-  <div class="toolbar">
-    <strong>Filter:</strong>
-    <span class="chip" data-tag="all">All</span>
-    <span class="chip" data-tag="tapas">Tapas</span>
-    <span class="chip" data-tag="wine bar">Wine bar</span>
-    <span class="chip" data-tag="brunch">Brunch</span>
-    <span class="chip" data-tag="cocktail">Cocktail</span>
-  </div>
-  <div id="map"></div>
-  <div class="legend">Drag/zoom · Click markers · Filters use substring match on tags</div>
-</div>
-
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script src="https://unpkg.com/supercluster@7.1.5/dist/supercluster.min.js"></script>
 <script>
 (async function(){
-  const res = await fetch('places.geojson');
-  const gj = await res.json();
-  console.log('[map] loaded features:', (gj.features||[]).length);
+  // --- try multiple paths so GitHub Pages subpaths don't break fetch ---
+  const candidates = [
+    'places.geojson',
+    (location.pathname.replace(/\/index\.html?$/,'').replace(/\/$/,'') + '/places.geojson')
+  ].filter(Boolean);
+
+  async function loadGeo() {
+    let lastErr = null;
+    for (const u of candidates) {
+      try {
+        const r = await fetch(u, { cache: 'no-store' });
+        if (!r.ok) throw new Error(`HTTP ${r.status} for ${u}`);
+        const j = await r.json();
+        if (!j || !Array.isArray(j.features)) throw new Error('Invalid GeoJSON');
+        console.log('[geo] loaded', j.features.length, 'features from', u);
+        return j;
+      } catch (e) { lastErr = e; console.warn('[geo] failed', u, e); }
+    }
+    throw lastErr || new Error('Could not load places.geojson');
+  }
 
   function normalizeTags(val){
     if (!val) return [];
@@ -48,13 +35,27 @@
     return [];
   }
 
+  let gj;
+  try { gj = await loadGeo(); }
+  catch (e) {
+    document.body.insertAdjacentHTML('beforeend',
+      `<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font:16px system-ui;background:#fff">
+         <div style="max-width:680px;padding:24px;border:1px solid #eee;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.08)">
+           <b>Failed to load <code>places.geojson</code></b><br>
+           <div style="margin-top:8px;color:#666">${String(e)}</div>
+           <div style="margin-top:12px">Make sure <code>places.geojson</code> sits next to <code>index.html</code> in the repo root, and visit it directly in the browser to confirm.</div>
+         </div>
+       </div>`);
+    console.error(e);
+    return;
+  }
+
   const rawFeatures = (gj.features||[])
     .filter(f => f && f.geometry && Array.isArray(f.geometry.coordinates));
 
   rawFeatures.forEach(f => {
     const p = f.properties || (f.properties = {});
     p.__tags_norm = normalizeTags(p.tags);
-    p.__name_norm = String(p.name||'').toLowerCase();
   });
 
   const index = new Supercluster({ radius: 60, maxZoom: 17 }).load(
@@ -68,84 +69,63 @@
 
   const layer = L.layerGroup().addTo(map);
 
-  function inBbox(f, bounds){
+  function inBbox(f, b){
     const [lng, lat] = f.geometry.coordinates;
-    return lat >= bounds.getSouth() && lat <= bounds.getNorth() &&
-           lng >= bounds.getWest() && lng <= bounds.getEast();
+    return lat >= b.getSouth() && lat <= b.getNorth() && lng >= b.getWest() && lng <= b.getEast();
   }
-
   function passesTag(f, tag){
     if (tag === 'all') return true;
     const tags = f.properties.__tags_norm || [];
     return tags.some(t => t.includes(tag.toLowerCase()));
   }
 
-  function render() {
-    layer.clearLayers();
-    const bounds = map.getBounds();
-    const zoom = map.getZoom();
-    const activeChip = document.querySelector('.chip.active');
-    const tag = activeChip ? activeChip.dataset.tag : 'all';
-    console.log('[render] tag=', tag, 'zoom=', zoom);
-
-    if (tag === 'all') {
-      const bbox = [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()];
-      const clusters = index.getClusters(bbox, zoom);
-      clusters.forEach(c => {
-        const coords = c.geometry && c.geometry.coordinates;
-        if (!coords) return;
-        const [lng, lat] = coords;
-        if (c.properties && c.properties.cluster) {
-          const count = c.properties.point_count_abbreviated || c.properties.point_count;
-          const m = L.marker([lat, lng], { title:`${count} places` });
-          m.on('click', () => map.setView([lat, lng], Math.min(zoom+2, 18)));
-          m.bindPopup(`<strong>${count}</strong> places here`);
-          m.addTo(layer);
-        } else {
-          addPlaceMarker(c);
-        }
-      });
-    } else {
-      const filtered = rawFeatures.filter(f => inBbox(f, bounds) && passesTag(f, tag));
-      console.log('[render] filtered places:', filtered.length);
-      filtered.forEach(addPlaceMarker);
-    }
-  }
-
   function addPlaceMarker(f) {
-    const coords = f.geometry && f.geometry.coordinates;
-    if (!coords) return;
-    const [lng, lat] = coords;
+    const [lng, lat] = f.geometry.coordinates;
     const p = f.properties || {};
-
     const links = [
       p.website ? `<a href="${p.website}" target="_blank" rel="noopener">Website</a>` : "",
       p.maps_url ? `<a href="${p.maps_url}" target="_blank" rel="noopener">Google Maps</a>` : "",
       p.menu_url ? `<a href="${p.menu_url}" target="_blank" rel="noopener">Menu</a>` : "",
       p.reservation_url ? `<a href="${p.reservation_url}" target="_blank" rel="noopener">Reserve</a>` : ""
     ].filter(Boolean).join(" · ");
-
     const price = p.price ? `<span>${p.price}</span> · ` : '';
     const rating = (p.rating || p.rating === 0) ? `⭐ ${p.rating}` : '';
     const addr = p.address ? `<small>${p.address}</small><br/>` : '';
     const phone = p.phone ? `<div>📞 ${p.phone}</div>` : '';
-
-    const m = L.marker([lat, lng]);
-    m.bindPopup(`
+    L.marker([lat, lng]).bindPopup(`
       <div style="min-width:240px">
         <strong>${p.name||'Untitled'}</strong><br/>
-        ${addr}
-        ${price}${rating}<br/>
-        ${phone}
-        ${links}
-      </div>
-    `);
-    m.addTo(layer);
+        ${addr}${price}${rating}<br/>${phone}${links}
+      </div>`).addTo(layer);
   }
 
-  const coords = rawFeatures.map(f => [f.geometry.coordinates[1], f.geometry.coordinates[0]]);
-  if (coords.length) map.fitBounds(L.latLngBounds(coords), { padding:[24,24] });
+  function render() {
+    layer.clearLayers();
+    const b = map.getBounds();
+    const z = map.getZoom();
+    const chip = document.querySelector('.chip.active');
+    const tag = chip ? chip.dataset.tag : 'all';
 
+    if (tag === 'all') {
+      const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      index.getClusters(bbox, z).forEach(c => {
+        const [lng, lat] = c.geometry.coordinates;
+        if (c.properties.cluster) {
+          const cnt = c.properties.point_count_abbreviated || c.properties.point_count;
+          const m = L.marker([lat, lng], { title:`${cnt} places` });
+          m.on('click', () => map.setView([lat, lng], Math.min(z+2, 18)));
+          m.bindPopup(`<strong>${cnt}</strong> places here`).addTo(layer);
+        } else { addPlaceMarker(c); }
+      });
+    } else {
+      rawFeatures.filter(f => inBbox(f, b) && passesTag(f, tag)).forEach(addPlaceMarker);
+    }
+  }
+
+  if (rawFeatures.length) {
+    const coords = rawFeatures.map(f => [f.geometry.coordinates[1], f.geometry.coordinates[0]]);
+    map.fitBounds(L.latLngBounds(coords), { padding:[24,24] });
+  }
   map.on('moveend zoomend', render);
   render();
 
@@ -159,5 +139,3 @@
   document.querySelector('[data-tag="all"]').classList.add('active');
 })();
 </script>
-</body>
-</html>
