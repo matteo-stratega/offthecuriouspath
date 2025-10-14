@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Hidden Gems BCN</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    html,body,#app{height:100%;margin:0}
+    #map{height:100%}
+    .toolbar{position:absolute;z-index:1000;top:12px;left:12px;background:#fff;padding:8px 10px;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12);font:14px system-ui}
+    .chip{display:inline-block;margin:2px 6px 0 0;padding:6px 10px;border-radius:999px;background:#f3f4f6;cursor:pointer}
+    .chip.active{background:#111;color:#fff}
+    .legend{position:absolute;z-index:1000;bottom:12px;left:12px;background:#fff;padding:8px 10px;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12);font:12px system-ui}
+  </style>
+</head>
+<body>
+<div id="app">
+  <div class="toolbar">
+    <strong>Filter:</strong>
+    <span class="chip" data-tag="all">All</span>
+    <span class="chip" data-tag="tapas">Tapas</span>
+    <span class="chip" data-tag="wine bar">Wine bar</span>
+    <span class="chip" data-tag="brunch">Brunch</span>
+    <span class="chip" data-tag="cocktail">Cocktail</span>
+  </div>
+  <div id="map"></div>
+  <div class="legend">Drag/zoom the map · Click a marker for details · “Filter” selects by tag</div>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/supercluster@7.1.5/dist/supercluster.min.js"></script>
+<script>
+(async function(){
+  const res = await fetch('places.geojson');
+  const gj = await res.json();
+
+  const index = new Supercluster({radius:60, maxZoom:17}).load(
+    gj.features.map(f => ({ type:'Feature', geometry:f.geometry, properties:{...f.properties} }))
+  );
+
+  const map = L.map('map', { zoomControl: true }).setView([41.387, 2.17], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution:'© OpenStreetMap contributors'
+  }).addTo(map);
+
+  const layer = L.layerGroup().addTo(map);
+
+  function render() {
+    layer.clearLayers();
+    const b = map.getBounds();
+    const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+    const zoom = map.getZoom();
+    const activeChip = document.querySelector('.chip.active');
+    const tag = activeChip ? activeChip.dataset.tag : 'all';
+
+    const clusters = index.getClusters(bbox, zoom);
+    clusters.forEach(c => {
+      if (c.properties.cluster) {
+        const [lng, lat] = c.geometry.coordinates;
+        const count = c.properties.point_count;
+        const m = L.marker([lat, lng], { title:`${count} places` });
+        m.on('click', () => map.setView([lat, lng], zoom+2));
+        m.bindPopup(`<strong>${count}</strong> places here`);
+        m.addTo(layer);
+      } else {
+        const p = c.properties;
+        const [lng, lat] = c.geometry.coordinates;
+        const tags = (p.tags||[]).map(t => (t||'').toLowerCase().trim());
+        if (tag !== 'all' && !tags.includes(tag)) return;
+
+        const m = L.marker([lat, lng]);
+        const url = p.url || p.maps_url;
+        const price = p.price ? `<span>${p.price}</span> · ` : '';
+        const rating = (p.rating || p.rating === 0) ? `⭐ ${p.rating}` : '';
+        const addr = p.address ? `<small>${p.address}</small><br/>` : '';
+        m.bindPopup(`
+          <div style="min-width:220px">
+            <strong>${p.name||'Untitled'}</strong><br/>
+            ${addr}
+            ${price}${rating}<br/>
+            ${url ? `<a href="${url}" target="_blank" rel="noopener">Open site/map</a>`:''}
+          </div>
+        `);
+        m.addTo(layer);
+      }
+    });
+  }
+
+  const coords = gj.features
+    .filter(f => f.geometry && f.geometry.coordinates)
+    .map(f => [f.geometry.coordinates[1], f.geometry.coordinates[0]]);
+  if (coords.length) map.fitBounds(L.latLngBounds(coords), { padding:[24,24] });
+
+  map.on('moveend zoomend', render);
+  render();
+
+  document.querySelectorAll('.chip').forEach(ch => {
+    ch.addEventListener('click', () => {
+      document.querySelectorAll('.chip').forEach(x => x.classList.remove('active'));
+      ch.classList.add('active');
+      render();
+    });
+  });
+  document.querySelector('[data-tag="all"]').classList.add('active');
+})();
+</script>
+</body>
+</html>
