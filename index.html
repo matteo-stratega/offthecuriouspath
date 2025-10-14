@@ -1,33 +1,3 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Hidden Gems BCN</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-  <style>
-    html,body,#app{height:100%;margin:0}
-    #map{height:100%}
-    .toolbar{position:absolute;z-index:1000;top:12px;left:12px;background:#fff;padding:8px 10px;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12);font:14px system-ui}
-    .chip{display:inline-block;margin:2px 6px 0 0;padding:6px 10px;border-radius:999px;background:#f3f4f6;cursor:pointer}
-    .chip.active{background:#111;color:#fff}
-    .legend{position:absolute;z-index:1000;bottom:12px;left:12px;background:#fff;padding:8px 10px;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12);font:12px system-ui}
-  </style>
-</head>
-<body>
-<div id="app">
-  <div class="toolbar">
-    <strong>Filter:</strong>
-    <span class="chip" data-tag="all">All</span>
-    <span class="chip" data-tag="tapas">Tapas</span>
-    <span class="chip" data-tag="wine bar">Wine bar</span>
-    <span class="chip" data-tag="brunch">Brunch</span>
-    <span class="chip" data-tag="cocktail">Cocktail</span>
-  </div>
-  <div id="map"></div>
-  <div class="legend">Drag/zoom the map · Click a marker for details · “Filter” selects by tag</div>
-</div>
-
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script src="https://unpkg.com/supercluster@7.1.5/dist/supercluster.min.js"></script>
 <script>
@@ -35,8 +5,24 @@
   const res = await fetch('places.geojson');
   const gj = await res.json();
 
-  const index = new Supercluster({radius:60, maxZoom:17}).load(
-    gj.features.map(f => ({ type:'Feature', geometry:f.geometry, properties:{...f.properties} }))
+  // --- FIX: robust tag normalization ---
+  function normalizeTags(val){
+    if (!val) return [];
+    if (Array.isArray(val)) return val.map(t => String(t||'').toLowerCase().trim()).filter(Boolean);
+    if (typeof val === 'string'){
+      // try JSON first, then split on common separators
+      let arr = null;
+      try { const parsed = JSON.parse(val); if (Array.isArray(parsed)) arr = parsed; } catch(e){}
+      if (!arr) arr = val.split(/[;,|/]/);
+      return arr.map(t => String(t||'').toLowerCase().trim()).filter(Boolean);
+    }
+    return [];
+  }
+
+  const index = new Supercluster({ radius: 60, maxZoom: 17 }).load(
+    gj.features
+      .filter(f => f && f.geometry && Array.isArray(f.geometry.coordinates))
+      .map(f => ({ type:'Feature', geometry:f.geometry, properties:{...f.properties} }))
   );
 
   const map = L.map('map', { zoomControl: true }).setView([41.387, 2.17], 12);
@@ -56,45 +42,64 @@
 
     const clusters = index.getClusters(bbox, zoom);
     clusters.forEach(c => {
-      if (c.properties.cluster) {
-        const [lng, lat] = c.geometry.coordinates;
+      const coords = c.geometry && c.geometry.coordinates;
+      if (!coords || coords.length !== 2) return;
+
+      const [lng, lat] = coords;
+
+      if (c.properties && c.properties.cluster) {
         const count = c.properties.point_count;
         const m = L.marker([lat, lng], { title:`${count} places` });
-        m.on('click', () => map.setView([lat, lng], zoom+2));
+        m.on('click', () => map.setView([lat, lng], Math.min(zoom+2, 18)));
         m.bindPopup(`<strong>${count}</strong> places here`);
         m.addTo(layer);
-      } else {
-        const p = c.properties;
-        const [lng, lat] = c.geometry.coordinates;
-        const tags = (p.tags||[]).map(t => (t||'').toLowerCase().trim());
-        if (tag !== 'all' && !tags.includes(tag)) return;
-
-        const m = L.marker([lat, lng]);
-        const url = p.url || p.maps_url;
-        const price = p.price ? `<span>${p.price}</span> · ` : '';
-        const rating = (p.rating || p.rating === 0) ? `⭐ ${p.rating}` : '';
-        const addr = p.address ? `<small>${p.address}</small><br/>` : '';
-        m.bindPopup(`
-          <div style="min-width:220px">
-            <strong>${p.name||'Untitled'}</strong><br/>
-            ${addr}
-            ${price}${rating}<br/>
-            ${url ? `<a href="${url}" target="_blank" rel="noopener">Open site/map</a>`:''}
-          </div>
-        `);
-        m.addTo(layer);
+        return;
       }
+
+      const p = c.properties || {};
+      // --- FIX: use normalized tags for filtering ---
+      const tags = normalizeTags(p.tags);
+      if (tag !== 'all' && !tags.includes(tag.toLowerCase())) return;
+
+      const m = L.marker([lat, lng]);
+
+      // prefer website → then maps_url → then url
+      const primaryLink = p.website || p.maps_url || p.url;
+      const links = [
+        p.website ? `<a href="${p.website}" target="_blank" rel="noopener">Website</a>` : "",
+        p.maps_url ? `<a href="${p.maps_url}" target="_blank" rel="noopener">Google Maps</a>` : "",
+        p.menu_url ? `<a href="${p.menu_url}" target="_blank" rel="noopener">Menu</a>` : "",
+        p.reservation_url ? `<a href="${p.reservation_url}" target="_blank" rel="noopener">Reserve</a>` : ""
+      ].filter(Boolean).join(" · ");
+
+      const price = p.price ? `<span>${p.price}</span> · ` : '';
+      const rating = (p.rating || p.rating === 0) ? `⭐ ${p.rating}` : '';
+      const addr = p.address ? `<small>${p.address}</small><br/>` : '';
+      const phone = p.phone ? `<div>📞 ${p.phone}</div>` : '';
+
+      m.bindPopup(`
+        <div style="min-width:240px">
+          <strong>${p.name||'Untitled'}</strong><br/>
+          ${addr}
+          ${price}${rating}<br/>
+          ${phone}
+          ${links || (primaryLink ? `<a href="${primaryLink}" target="_blank" rel="noopener">Open</a>` : '')}
+        </div>
+      `);
+      m.addTo(layer);
     });
   }
 
+  // fit map to all features safely
   const coords = gj.features
-    .filter(f => f.geometry && f.geometry.coordinates)
+    .filter(f => f.geometry && Array.isArray(f.geometry.coordinates))
     .map(f => [f.geometry.coordinates[1], f.geometry.coordinates[0]]);
   if (coords.length) map.fitBounds(L.latLngBounds(coords), { padding:[24,24] });
 
   map.on('moveend zoomend', render);
   render();
 
+  // filter chips
   document.querySelectorAll('.chip').forEach(ch => {
     ch.addEventListener('click', () => {
       document.querySelectorAll('.chip').forEach(x => x.classList.remove('active'));
@@ -105,5 +110,3 @@
   document.querySelector('[data-tag="all"]').classList.add('active');
 })();
 </script>
-</body>
-</html>
